@@ -94,6 +94,16 @@ app.use((err, req, res, next) => {
     }
     return res.status(403).json({ error: 'origin not allowed' });
   }
+  // Client errors (malformed JSON, oversized body, bad params) are the caller's
+  // fault, not a server fault: reply with the REAL status and log ONE terse
+  // line. This API is internet-facing and scanners POST junk constantly — a
+  // stack trace per probe would bury the errors that actually matter.
+  const status = Number(err && (err.status || err.statusCode)) || 500;
+  if (status < 500) {
+    console.warn(`[ponsliqui] ${status} ${req.method} ${req.originalUrl} — ${err.message}`);
+    return res.status(status).json({ error: err.message });
+  }
+
   console.error('[ponsliqui] request error:', err);
   res.status(500).json({ error: err.message });
 });
