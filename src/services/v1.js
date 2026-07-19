@@ -14,10 +14,22 @@ const { sumAirdrops } = require('./format');
 // reward_token address (lowercased) -> symbol.
 const SYMBOL_BY_ADDR = { [config.rewardToken.toLowerCase()]: config.rewardSymbol };
 
-/** GET /v1/stocks — the reward constituent(s). One token now: PONS. */
+/**
+ * GET /v1/stocks — the reward constituent(s). One token now: PONS.
+ * `distributed` is the all-time UI amount of the reward airdropped, which the
+ * site renders on the holdings card.
+ */
 async function buildStocks() {
+  const totals = await repo.getAirdropTotals().catch(() => ({}));
+  const mine = totals[config.rewardToken] || totals[config.rewardToken.toLowerCase()] || {};
   return [
-    { symbol: config.rewardSymbol, name: config.rewardSymbol, address: config.rewardToken, priceUsd: null },
+    {
+      symbol: config.rewardSymbol,
+      name: config.rewardSymbol,
+      address: config.rewardToken,
+      priceUsd: null, // no live PONS USD feed wired in this pass
+      distributed: +(mine.totalUi || 0).toFixed(6),
+    },
   ];
 }
 
@@ -45,10 +57,15 @@ async function buildStats() {
     indexPriceUsd: market.priceUsd ?? null, // null until listed
     totalValueDistributedUsd: null, // no live PONS USD price wired in this pass
     feesCollectedEth: +(stats.total_eth_claimed || 0).toFixed(6),
-    ponspepeBurned: stats.total_tokens_burned || 0, // token-side fee burned to date
-    ponspepeSold: stats.total_tokens_sold || 0, // token-side fee sold to ETH for the dev (NOT burned)
-    ethToDev: +(stats.total_eth_to_dev || 0).toFixed(6), // ETH sent to the dev from selling the fee
-    devFees: stats.devFees || 0, // count of dev-fee sells performed
+    // The token-side fee is burned in FULL each cycle (never sold/transferred).
+    // Three names for the same number — the site reads `ponsBurned`/`tokensBurned`.
+    ponspepeBurned: stats.total_tokens_burned || 0,
+    ponsBurned: stats.total_tokens_burned || 0,
+    tokensBurned: stats.total_tokens_burned || 0,
+    // Retained for backwards compatibility; always 0 now that nothing is sold.
+    ponspepeSold: stats.total_tokens_sold || 0,
+    ethToDev: +(stats.total_eth_to_dev || 0).toFixed(6),
+    devFees: stats.devFees || 0,
     burns: stats.burns || 0,
     wallets: eligible, // CURRENT eligible wallets (last cycle's snapshot)
     holders: eligible,
@@ -60,37 +77,27 @@ async function buildStats() {
   };
 }
 
-/** One cycle's steps → a distribution receipt, or null if it bought nothing. */
-function cycleToDistribution(cycle) {
-  const steps = cycle.steps || [];
-  const buys = steps.filter((s) => s.name === 'buy' && s.detail && s.detail.leg === 'reward' && s.status === 'ok');
-  if (!buys.length) return null;
-
-  const allocations = buys.map((s) => ({
-    symbol: s.detail.symbol,
-    shares: Number(s.detail.tokensBought) || 0,
-    usd: null, // no live PONS USD price wired in this pass
-  }));
-  const airdrop = steps.find((s) => s.name === 'airdrop');
-
+/**
+ * One `airdrops` row → the PER-WALLET drop the site's live feed renders.
+ * `id` keeps a numeric tail so the frontend can poll for "newer than <id>".
+ */
+function airdropToDrop(a) {
   return {
-    id: `dist-${cycle.id}`,
-    timestamp: Date.parse(cycle.finished_at || cycle.started_at) || Date.now(),
-    wallets: cycle.eligible_holders ?? (airdrop && airdrop.detail ? airdrop.detail.sent : 0) ?? 0,
-    txHash: steps.map((s) => s.signature).find(Boolean) ?? null,
-    allocations,
+    id: `drop-${a.id}`,
+    wallet: a.recipient,
+    pons: Number(a.amount_ui) || 0, // reward received by this wallet
+    txHash: a.signature ?? null,
+    timestamp: Date.parse(a.created_at) || Date.now(), // epoch ms
   };
 }
 
-/** GET /v1/distributions — recent distribution receipts, newest first. */
-async function buildDistributions(limit = 12) {
-  const { items } = await repo.getCycles(limit, 0);
-  const complete = items.filter((c) => c.status === 'complete');
-  const full = await Promise.all(complete.map((c) => repo.getCycleWithSteps(c.id)));
-  return full
-    .filter(Boolean)
-    .map((c) => cycleToDistribution(c))
-    .filter(Boolean);
+/**
+ * GET /v1/distributions — recent PER-WALLET reward drops, newest first.
+ * One row per wallet paid (not per cycle), which is what the live feed renders.
+ */
+async function buildDistributions(limit = 50) {
+  const { items } = await repo.getAirdrops(limit, 0, config.rewardToken);
+  return (items || []).filter((a) => a.status === 'ok').map(airdropToDrop);
 }
 
-module.exports = { buildStocks, buildStats, buildDistributions, cycleToDistribution, SYMBOL_BY_ADDR };
+module.exports = { buildStocks, buildStats, buildDistributions, airdropToDrop, SYMBOL_BY_ADDR };

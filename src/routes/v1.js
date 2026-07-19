@@ -33,7 +33,8 @@ function cached(ttlMs, fn) {
 
 const loadStats = cached(15_000, buildStats);
 const loadStocks = cached(30_000, buildStocks);
-const loadDistributions = cached(10_000, () => buildDistributions(12));
+// Per-wallet drops, so keep a deeper window than the old per-cycle receipts.
+const loadDistributions = cached(10_000, () => buildDistributions(50));
 
 router.get('/stats', async (req, res, next) => {
   try {
