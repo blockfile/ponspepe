@@ -6,6 +6,10 @@ const assert = require('node:assert');
 // offline and deterministic.
 const marketdata = require('./marketdata');
 marketdata.getMarketData = async () => ({ marketCap: null, priceUsd: null });
+// Mutable so a test can set the live PONS price. v1 captures this stub when it
+// is required below, and the stub reads the variable at call time.
+let PONS_PRICE_USD = null;
+marketdata.getTokenMarketData = async () => ({ tokenInLp: null, marketCap: null, priceUsd: PONS_PRICE_USD });
 const repo = require('../db/repository');
 const config = require('../config');
 
@@ -56,15 +60,42 @@ test('SYMBOL_BY_ADDR maps the reward token address to its symbol', () => {
   assert.strictEqual(SYMBOL_BY_ADDR[config.rewardToken.toLowerCase()], config.rewardSymbol);
 });
 
-test('buildStocks returns the reward constituent with its all-time distributed', async () => {
+test('buildStocks returns the reward constituent with its live price + distributed', async () => {
   repo.getAirdropTotals = async () => ({ [config.rewardToken]: { sends: 4, totalUi: 250.5, holders: 3 } });
+  PONS_PRICE_USD = 0.01558;
 
   const stocks = await buildStocks();
   assert.strictEqual(stocks.length, 1);
   assert.strictEqual(stocks[0].symbol, config.rewardSymbol);
   assert.strictEqual(stocks[0].address, config.rewardToken);
-  assert.strictEqual(stocks[0].priceUsd, null);
+  assert.strictEqual(stocks[0].priceUsd, 0.01558);
   assert.strictEqual(stocks[0].distributed, 250.5);
+  PONS_PRICE_USD = null;
+});
+
+test('totalValueDistributedUsd = PONS distributed x live PONS price', async () => {
+  repo.getStats = async () => ({ total_tokens_burned: 0, total_tokens_sold: 0, total_eth_to_dev: 0, total_eth_claimed: 0, burns: 0, devFees: 0 });
+  repo.getAirdropTotals = async () => ({ [config.rewardToken]: { sends: 2, totalUi: 1000, holders: 5 } });
+  repo.getLatestEligibleHolders = async () => 5;
+  PONS_PRICE_USD = 0.01558;
+
+  const stats = await buildStats();
+  assert.strictEqual(stats.rewardsDistributed, 1000);
+  assert.strictEqual(stats.rewardPriceUsd, 0.01558);
+  assert.strictEqual(stats.totalValueDistributedUsd, 15.58); // 1000 * 0.01558
+  PONS_PRICE_USD = null;
+});
+
+test('totalValueDistributedUsd stays null when PONS cannot be priced', async () => {
+  repo.getStats = async () => ({ total_tokens_burned: 0, total_tokens_sold: 0, total_eth_to_dev: 0, total_eth_claimed: 0, burns: 0, devFees: 0 });
+  repo.getAirdropTotals = async () => ({ [config.rewardToken]: { sends: 2, totalUi: 1000, holders: 5 } });
+  repo.getLatestEligibleHolders = async () => 5;
+  PONS_PRICE_USD = null;
+
+  const stats = await buildStats();
+  // null, not 0 — "couldn't price it" must be distinguishable from "nothing yet".
+  assert.strictEqual(stats.totalValueDistributedUsd, null);
+  assert.strictEqual(stats.rewardsDistributed, 1000);
 });
 
 test('/v1 stats exposes the burned total under every name the site reads', async () => {

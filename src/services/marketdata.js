@@ -10,7 +10,9 @@ const config = require('../config');
 
 const TTL_MS = 30_000;
 const EMPTY = { tokenInLp: null, marketCap: null, priceUsd: null };
-let cache = { value: EMPTY, at: 0 };
+// token address (lowercased) -> { value, at }. Keyed per token so the ponspepe
+// market cap and the reward token's (PONS) price are cached independently.
+const cache = new Map();
 
 async function fetchDexScreener(token) {
   const url = `https://api.dexscreener.com/latest/dex/tokens/${token}`;
@@ -39,17 +41,30 @@ async function fetchDexScreener(token) {
   };
 }
 
-// Cached read; refreshes at most every TTL_MS. Keeps the last good value on error.
-async function getMarketData() {
-  if (!config.tokenAddress) return EMPTY;
+/**
+ * Cached read for ANY token. Refreshes at most every TTL_MS and keeps the last
+ * good value on error, so callers never break when DexScreener is unreachable.
+ */
+async function getTokenMarketData(token) {
+  if (!token) return EMPTY;
+  const key = String(token).toLowerCase();
   const now = Date.now();
-  if (now - cache.at < TTL_MS && cache.at !== 0) return cache.value;
+  const hit = cache.get(key);
+  if (hit && now - hit.at < TTL_MS) return hit.value;
   try {
-    cache = { value: await fetchDexScreener(config.tokenAddress), at: now };
+    const value = await fetchDexScreener(key);
+    cache.set(key, { value, at: now });
+    return value;
   } catch (_err) {
-    cache = { value: cache.value, at: now }; // keep last value; don't break /stats
+    const last = hit ? hit.value : EMPTY;
+    cache.set(key, { value: last, at: now }); // keep last value; don't break /stats
+    return last;
   }
-  return cache.value;
 }
 
-module.exports = { getMarketData };
+/** The configured ponspepe token — market cap + tokens-in-LP for /stats. */
+async function getMarketData() {
+  return getTokenMarketData(config.tokenAddress);
+}
+
+module.exports = { getMarketData, getTokenMarketData };
