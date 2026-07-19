@@ -128,10 +128,10 @@ function toPublicStats({ stats, unclaimedEth, operatingWallet, market = {}, aird
     marketCap: market.marketCap ?? null, // USD market cap (DexScreener); null until listed
     unclaimedFeesEth: unclaimedEth == null ? null : +unclaimedEth.toFixed(9),
     totalCreatorFeesClaimed: stats.total_eth_claimed,
-    // ETH spent buying the stocks that get airdropped.
+    // ETH spent buying the reward token that gets airdropped.
     ethSpentBuying: +(stats.total_eth_spent_buy || 0).toFixed(9),
     tokensBought: stats.total_tokens_bought || 0,
-    // Stock airdrop headline (per-stock totals live in `airdrops`).
+    // Reward airdrop headline (per-token totals live in `airdrops`).
     rewardsDistributed: air.rewardsDistributed,
     rewardHolders: air.rewardHolders,
     airdrops: airdropTotals,

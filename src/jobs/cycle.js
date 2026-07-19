@@ -6,95 +6,86 @@ const { parseEther, formatUnits } = require('ethers');
 const { claimCreatorFees } = require('../evm/pons');
 const { burnToken } = require('../evm/burn');
 const { sellTokenForEth } = require('../evm/sell');
-const { getWethBalanceEth, unwrapAllWeth, getTokenSupplyRaw, readTokenBalance } = require('../evm/erc20');
+const { getWethBalanceEth, unwrapAllWeth, getTokenSupplyRaw, readTokenBalance, getDecimals } = require('../evm/erc20');
 const { snapshotEligibleHolders } = require('../evm/holders');
 const { buildExcludeSet } = require('../evm/exclude');
 const { computeWeightedAllocations } = require('../services/distribution');
 const { airdropToken } = require('../evm/airdrop');
-const { resolveStocks } = require('../evm/stocks');
-const { buyStockWithEth } = require('../evm/v4');
+const { buyReward } = require('../evm/reward');
 
 /**
- * Reward leg: split `ethAmount` across the configured stocks, buy each on
- * Uniswap V4 with native ETH, and airdrop each stock pro-rata to eligible
- * holders of `holderToken` (PONZI).
+ * Reward leg: spend `ethAmount` (held as WETH) buying the reward token (PONS) on
+ * Uniswap V3, then airdrop it pro-rata to eligible holders of `holderToken`
+ * (ponspepe).
  *
- * The holder snapshot is taken ONCE and reused for every stock, so all stocks
- * use identical weights and a holder can't shift their share between drops.
- * Only what was actually bought this cycle is distributed (measured from the
- * balance delta), never a holder's own balance.
+ * The holder snapshot is taken ONCE. Only what was actually bought this cycle is
+ * distributed (measured from the balance delta), never a holder's own balance.
  *
- * A stock that fails (no pool, revert) is recorded and skipped — one bad stock
- * must not cost the others their airdrop.
+ * A failed buy (no pool, revert) is recorded and skipped — the cycle still
+ * finishes, since the token-side fee burn/sell already happened and the dev cut
+ * is still swept.
  */
 async function runRewardLeg(cycleId, { holderToken, ethAmount, minHold, capPct, clusters }) {
   const log = (m) => console.log(`[cycle ${cycleId}] [reward] ${m}`);
 
-  const stocks = resolveStocks(config.stocks);
-  if (!stocks.length) throw new Error('no stocks configured');
-
-  // Snapshot once; every stock is weighted identically off it.
-  const minHoldRaw = (BigInt(Math.trunc(minHold)) * 10n ** 18n).toString(); // PONZI: 18 decimals
+  // Snapshot once.
+  const minHoldRaw = (BigInt(Math.trunc(minHold)) * 10n ** 18n).toString(); // ponspepe: 18 decimals
   const exclude = await buildExcludeSet(holderToken);
   const { holders, totalHolders } = await snapshotEligibleHolders({ token: holderToken, minHoldRaw, exclude });
   log(`${holders.length} eligible holders (>= ${minHold}) of ${totalHolders} total`);
   if (!holders.length) {
-    log('no eligible holders — skipping the stock buys (nothing to airdrop to)');
-    return { sent: 0, failed: 0, eligibleHolders: 0, totalHolders, stocks: [] };
+    log('no eligible holders — skipping the reward buy (nothing to airdrop to)');
+    return { sent: 0, failed: 0, eligibleHolders: 0, totalHolders, bought: 0 };
   }
 
   const supplyRaw = capPct == null ? null : (await getTokenSupplyRaw(holderToken)).toString();
-  const perStockWei = parseEther(String(ethAmount)) / BigInt(stocks.length);
-  log(`buying ${stocks.length} stocks with ${ethAmount} ETH (${formatUnits(perStockWei, 18)} each): ${stocks.map((s) => s.symbol).join(', ')}`);
+  const rewardWei = parseEther(String(ethAmount));
+  const decimals = config.dryRun ? 18 : await getDecimals(config.rewardToken);
+  log(`buying ${config.rewardSymbol} with ${ethAmount} WETH on V3`);
 
-  let sent = 0;
-  let failed = 0;
-  const results = [];
-
-  for (const stock of stocks) {
-    try {
-      const buy = await buyStockWithEth(stock, perStockWei);
-      const boughtUi = Number(formatUnits(buy.boughtRaw, stock.decimals));
-      await repo.addStep({
-        cycleId,
-        name: 'buy',
-        status: 'ok',
-        signature: buy.signature,
-        detail: { leg: 'reward', stock: stock.symbol, token: stock.token, ethSpent: Number(formatUnits(perStockWei, 18)), tokensBought: boughtUi },
-      });
-
-      const allocations = computeWeightedAllocations(holders, buy.boughtRaw.toString(), { capPct, supplyRaw, clusters });
-      const air = await airdropToken({ rewardToken: stock.token, allocations, cycleId });
-      await repo.addStep({
-        cycleId,
-        name: 'airdrop',
-        status: air.failed ? 'failed' : 'ok',
-        detail: { stock: stock.symbol, token: stock.token, recipients: allocations.length, sent: air.sent, failed: air.failed },
-      });
-      sent += air.sent;
-      failed += air.failed;
-      results.push({ symbol: stock.symbol, bought: boughtUi, sent: air.sent, failed: air.failed });
-      log(`${stock.symbol}: bought ${boughtUi} → airdrop sent=${air.sent} failed=${air.failed}`);
-    } catch (err) {
-      const message = err && err.message ? err.message : String(err);
-      await repo.addStep({ cycleId, name: 'buy', status: 'failed', detail: { leg: 'reward', stock: stock.symbol, token: stock.token, message } });
-      results.push({ symbol: stock.symbol, error: message });
-      log(`${stock.symbol}: SKIPPED — ${message}`);
-    }
+  // One buy funds the whole drop. On failure, record it and skip the airdrop.
+  let buy;
+  try {
+    buy = await buyReward(rewardWei);
+  } catch (err) {
+    const message = err && err.message ? err.message : String(err);
+    await repo.addStep({ cycleId, name: 'buy', status: 'failed', detail: { leg: 'reward', token: config.rewardToken, symbol: config.rewardSymbol, message } });
+    log(`${config.rewardSymbol} buy SKIPPED — ${message}`);
+    return { sent: 0, failed: 0, eligibleHolders: holders.length, totalHolders, bought: 0 };
   }
 
-  return { sent, failed, eligibleHolders: holders.length, totalHolders, stocks: results };
+  const boughtUi = Number(formatUnits(buy.boughtRaw, decimals));
+  await repo.addStep({
+    cycleId,
+    name: 'buy',
+    status: 'ok',
+    signature: buy.signature,
+    detail: { leg: 'reward', token: config.rewardToken, symbol: config.rewardSymbol, ethSpent: Number(formatUnits(rewardWei, 18)), tokensBought: boughtUi },
+  });
+
+  const allocations = computeWeightedAllocations(holders, buy.boughtRaw.toString(), { capPct, supplyRaw, clusters });
+  const air = await airdropToken({ rewardToken: config.rewardToken, allocations, cycleId });
+  await repo.addStep({
+    cycleId,
+    name: 'airdrop',
+    status: air.failed ? 'failed' : 'ok',
+    detail: { token: config.rewardToken, symbol: config.rewardSymbol, recipients: allocations.length, sent: air.sent, failed: air.failed },
+  });
+  log(`${config.rewardSymbol}: bought ${boughtUi} → airdrop sent=${air.sent} failed=${air.failed}`);
+
+  return { sent: air.sent, failed: air.failed, eligibleHolders: holders.length, totalHolders, bought: boughtUi };
 }
 
 /**
  * One reward cycle (fired by the scheduler; skipped upstream when nothing is
  * claimable):
  *
- *   claim PONZI creator fees from the pons.family locker (paid in WETH)
- *     → unwrap to native ETH (the V4 stock pools price against native ETH)
- *     → REWARD_BUY_PCT: buy the stocks on Uniswap V4 and airdrop each to PONZI
- *                       holders (pro-rata)
- *     → remainder:      kept as native ETH (dev cut + gas)
+ *   claim ponspepe creator fees from the pons.family locker (paid in WETH + the
+ *   token itself)
+ *     → token-side fee: burn BURN_PCT, sell the rest to ETH for the dev
+ *     → REWARD_BUY_PCT of the WETH: buy PONS on Uniswap V3 and airdrop it to the
+ *                       ponspepe holders (pro-rata)
+ *     → remainder:      unwrapped to native ETH (dev cut + gas)
  *
  * Each step is recorded; a thrown step fails the cycle without crashing.
  * @returns {Promise<object>} the persisted cycle (with steps)
@@ -106,8 +97,8 @@ async function runCycle() {
   try {
     if (!config.tokenAddress) throw new Error('TOKEN_ADDRESS (PONZI) is required');
 
-    // 1. Claim creator fees. pons pays them in WETH + the token itself (RIF), so
-    //    after this both land in the wallet.
+    // 1. Claim creator fees. pons pays them in WETH + the token itself (ponspepe),
+    //    so after this both land in the wallet.
     const claim = await claimCreatorFees();
     await repo.addStep({ cycleId: id, name: 'claim', status: 'ok', signature: claim.signature, detail: { ethClaimed: claim.ethClaimed } });
     log(`claimed ${claim.ethClaimed} ETH`);
@@ -115,15 +106,15 @@ async function runCycle() {
     // 2. Split the wallet's token-side fee. Burn BURN_PCT to the dead address;
     //    sell the remainder to ETH from the DISCLOSED seller wallet and send the
     //    ETH to the dev. Both legs are best-effort — a failure here must never
-    //    strand the stock airdrops. The sell is NEVER labeled a burn. NOTE: this
-    //    consumes ALL RIF in the operating wallet, so do not park RIF here.
+    //    strand the reward airdrop. The sell is NEVER labeled a burn. NOTE: this
+    //    consumes ALL ponspepe the operating wallet holds, so do not park it here.
     let burned = 0;
     let burnSig = null;
     let sold = 0;
     let ethToDev = 0;
     let devFeeSig = null;
     const feeBalRaw = config.dryRun
-      ? 10n ** 21n // simulate ~1000 RIF so a dry cycle exercises both legs
+      ? 10n ** 21n // simulate ~1000 ponspepe so a dry cycle exercises both legs
       : await readTokenBalance(config.tokenAddress, config.wallet.address).catch(() => 0n);
     if (feeBalRaw > 0n) {
       const burnRaw = (feeBalRaw * BigInt(Math.round(config.burnPct * 100))) / 10000n;
@@ -163,22 +154,18 @@ async function runCycle() {
     const walletWeth = config.dryRun ? claimed : await getWethBalanceEth().catch(() => claimed);
     if (!(walletWeth > 0)) {
       await repo.finishCycle(id, { status: 'skipped', eth_claimed: claimed, tokens_burned: burned, tokens_sold: sold, eth_to_dev: ethToDev, burn_sig: burnSig, dev_fee_sig: devFeeSig, note: 'nothing claimed (WETH)' });
-      log('skipped: no WETH to buy stocks (RIF fee still burned + sold)');
+      log('skipped: no WETH to buy the reward (ponspepe fee still burned + sold)');
       return repo.getCycleWithSteps(id);
     }
 
-    // The claim lands as WETH, but the V4 stock pools price against NATIVE ETH —
-    // so unwrap the whole claim up front and spend ETH directly.
-    if (!config.dryRun) {
-      await unwrapAllWeth().catch((err) => log(`unwrap before stock buys failed (non-fatal): ${err.message}`));
-    }
-
+    // Do NOT unwrap here: the reward buy swaps WETH → PONS directly on V3, so the
+    // claim stays as WETH. Only the dev remainder is unwrapped to native ETH below.
     const rewardEth = +(walletWeth * (config.rewardBuyPct / 100)).toFixed(9);
     const devEth = +(walletWeth - rewardEth).toFixed(9);
-    log(`split: ${rewardEth} → stocks (${config.rewardBuyPct}%), keep ${devEth} for dev/gas (${config.devPct}%)`);
+    log(`split: ${rewardEth} → ${config.rewardSymbol} (${config.rewardBuyPct}%), keep ${devEth} for dev/gas (${config.devPct}%)`);
 
-    // 2. Reward leg — buy stocks on V4 + airdrop each to PONZI holders.
-    let reward = { sent: 0, failed: 0, eligibleHolders: 0, totalHolders: 0, stocks: [] };
+    // 2. Reward leg — buy PONS on V3 + airdrop it to ponspepe holders.
+    let reward = { sent: 0, failed: 0, eligibleHolders: 0, totalHolders: 0, bought: 0 };
     if (rewardEth > 0) {
       reward = await runRewardLeg(id, {
         holderToken: config.tokenAddress,
@@ -189,16 +176,18 @@ async function runCycle() {
       });
     }
 
-    // 3. Dev cut — sweep any WETH left over (e.g. a claim that arrived after the
-    //    unwrap) to native ETH. Best-effort — never fails the cycle.
+    // 3. Dev cut — unwrap the remaining WETH (the dev portion, plus any residue or
+    //    a claim that arrived mid-cycle) to native ETH. Best-effort — never fails
+    //    the cycle.
     await unwrapAllWeth().catch((err) => log(`unwrap remainder failed (non-fatal): ${err.message}`));
 
     // 4. Done.
     await repo.finishCycle(id, {
       status: 'complete',
-      mode: 'stocks-reward',
+      mode: 'pons-reward',
       eth_claimed: claimed,
       eth_spent_buy: rewardEth,
+      tokens_bought: reward.bought,
       tokens_burned: burned,
       tokens_sold: sold,
       eth_to_dev: ethToDev,
@@ -206,10 +195,9 @@ async function runCycle() {
       dev_fee_sig: devFeeSig,
       eligible_holders: reward.eligibleHolders,
       total_holders: reward.totalHolders,
-      stocks: reward.stocks,
-      note: `burned ${burned} + sold ${sold} ${config.tokenSymbol} (→ ${ethToDev} ETH dev); airdropped ${reward.stocks.filter((s) => !s.error).length} stocks, ${reward.sent} sends (${reward.failed} failed)`,
+      note: `burned ${burned} + sold ${sold} ${config.tokenSymbol} (→ ${ethToDev} ETH dev); bought ${reward.bought} ${config.rewardSymbol}, airdropped to ${reward.sent} (${reward.failed} failed)`,
     });
-    log('complete (stocks-reward)');
+    log('complete (pons-reward)');
     return repo.getCycleWithSteps(id);
   } catch (err) {
     const message = err && err.message ? err.message : String(err);

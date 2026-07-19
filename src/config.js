@@ -15,12 +15,6 @@ function num(value, fallback) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-const list = (v) =>
-  String(v || '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-
 function parseClusters(value) {
   if (!value) return [];
   try {
@@ -85,8 +79,8 @@ const sellerWallet = loadSellerWallet();
 const lowerOrNull = (v) => (v ? String(v).trim().toLowerCase() : null);
 
 // ── Reward split (of each WETH claim) ────────────────────────────────────────
-// REWARD_BUY_PCT → buy the stocks and airdrop them to PONZI holders; the
-// remainder (dev cut) stays in the wallet as native ETH for gas.
+// REWARD_BUY_PCT → buy the reward token and airdrop it to ponspepe holders; the
+// remainder (dev cut) is unwrapped to native ETH for gas.
 const rewardBuyPct = num(process.env.REWARD_BUY_PCT, 80);
 if (rewardBuyPct < 0 || rewardBuyPct > 100) {
   throw new Error(`invalid split: REWARD_BUY_PCT(${rewardBuyPct}) must be within [0, 100]`);
@@ -105,10 +99,10 @@ if (!DRY_RUN && burnPct < 100 && !sellerWallet) {
 }
 
 const triggerMode = ['interval', 'accumulation'].includes(
-  String(process.env.TRIGGER_MODE || 'interval').toLowerCase()
+  String(process.env.TRIGGER_MODE || 'accumulation').toLowerCase()
 )
-  ? String(process.env.TRIGGER_MODE || 'interval').toLowerCase()
-  : 'interval';
+  ? String(process.env.TRIGGER_MODE || 'accumulation').toLowerCase()
+  : 'accumulation';
 
 const config = {
   port: num(process.env.PORT, 3000),
@@ -139,46 +133,32 @@ const config = {
   tokenAddress: lowerOrNull(process.env.TOKEN_ADDRESS),
   tokenSymbol: process.env.TOKEN_SYMBOL || 'PONZI',
 
-  // ── Uniswap V4 — the stock buy path ──────────────────────────────────────
-  // Robinhood stock tokens have NO V2 pairs and their V3 pools are empty; the
-  // liquidity lives in the V4 singleton PoolManager. An EOA can't swap V4
-  // directly (unlock/callback), so buys go through the UniversalRouter and are
-  // priced by V4Quoter. These deployments are the ones wired to this PoolManager
-  // (verified on-chain — other UniversalRouters on this chain point elsewhere).
-  universalRouter: process.env.UNIVERSAL_ROUTER || '0xC6da9C87caE2fcecad79E22C398dE16BFAb0cFdA',
-  v4Quoter: process.env.V4_QUOTER || '0x628c00B016415Ef530552063faE4154B0CdEb0Ac',
-  poolManager: process.env.POOL_MANAGER || '0x8366a39CC670B4001A1121B8F6A443A643e40951',
-  // StateView reads V4 pool state (slot0 → sqrtPrice) for the live stock prices
-  // shown on the site. Same PoolManager as above.
-  v4StateView: process.env.V4_STATE_VIEW || '0xF3334192D15450CdD385c8B70e03f9A6bD9E673b',
-
-  // Which stock tokens to buy + airdrop (symbols, comma-separated). Blank = the
-  // whole verified registry (see src/evm/stocks.js).
-  stocks: list(process.env.STOCKS),
-
-  // Price-sanity bounds for a stock buy. Several V4 pools on this chain are
-  // initialised but EMPTY and quote absurd prices (TSM implies ~$179,000,000 a
-  // share against a real ~$408). The slippage floor cannot catch that, because
-  // amountOutMinimum is derived from the same poisoned quote — so any implied
-  // unit price outside this range means "broken pool", and the stock is skipped.
-  maxImpliedPriceUsd: num(process.env.MAX_IMPLIED_PRICE_USD, 10000),
-  minImpliedPriceUsd: num(process.env.MIN_IMPLIED_PRICE_USD, 0.01),
+  // ── Reward token (Uniswap V3) ────────────────────────────────────────────
+  // Each cycle spends REWARD_BUY_PCT of the WETH claim buying this token, which
+  // is then airdropped pro-rata to the ponspepe holders. PONS has no native-ETH
+  // V4 pool; its liquidity is a PONS/WETH Uniswap V3 pool, so the buy goes
+  // WETH → PONS through the same V3 SwapRouter02 the fee-sell uses (SWAP_ROUTER),
+  // at the REWARD_POOL_FEE tier. Address pinned (verified on-chain: the deep pool
+  // is the 1% tier; the 0.3% pool is nearly empty).
+  rewardToken: lowerOrNull(process.env.REWARD_TOKEN) || '0x39dbed3a2bd333467115de45665cc57f813c4571',
+  rewardSymbol: process.env.REWARD_SYMBOL || 'PONS',
+  rewardPoolFee: num(process.env.REWARD_POOL_FEE, 10000),
 
   // ── Split ────────────────────────────────────────────────────────────────
-  rewardBuyPct, // % of each claim → buy STOCKS (airdropped to holders)
+  rewardBuyPct, // % of each claim → buy the reward token (airdropped to holders)
   devPct, // remainder kept as native ETH (dev cut + gas)
-  slippagePct: num(process.env.SLIPPAGE_PCT, 5), // V4 stock-buy slippage, percent
+  slippagePct: num(process.env.SLIPPAGE_PCT, 5), // reward-buy (WETH→PONS) slippage, percent
   deadAddress: lowerOrNull(process.env.DEAD_ADDRESS) || '0x000000000000000000000000000000000000dead',
 
   // ── Token-side fee split (burn vs disclosed dev-fee sell) ─────────────────
   burnPct, // % of the token-side fee burned; the rest is sold to ETH for the dev
-  sellSlippagePct: num(process.env.SELL_SLIPPAGE_PCT, 5), // RIF→WETH slippage floor, percent
+  sellSlippagePct: num(process.env.SELL_SLIPPAGE_PCT, 5), // ponspepe→WETH slippage floor, percent
   sellerGasReserveEth: num(process.env.SELLER_GAS_RESERVE_ETH, 0.002), // ETH kept in the seller wallet for gas
   sellerWallet, // disclosed fee-conversion signer (or null)
   sellerAddress: sellerWallet ? sellerWallet.address.toLowerCase() : null,
   devWallet: lowerOrNull(process.env.DEV_WALLET) || wallet.address.toLowerCase(),
 
-  // ── Airdrop (stocks → PONZI holders) ────────────────────────────────────────
+  // ── Airdrop (reward token → ponspepe holders) ───────────────────────────────
   minHold: num(process.env.MIN_HOLD, 100000), // min PONZI balance to qualify
   rewardCapPct: num(process.env.REWARD_CAP_PCT, 0), // per-wallet weight cap, % of supply (0 = pure pro-rata)
   clusters: parseClusters(process.env.CLUSTERS), // wallet groups treated as one person for the cap
@@ -192,12 +172,13 @@ const config = {
     .filter(Boolean),
 
   // ── Trigger ─────────────────────────────────────────────────────────────────
-  // The scheduler ticks on POLL_SCHEDULE. TRIGGER_MODE decides the gate:
-  //   'interval'     → fire on whatever has accrued every tick (default)
-  //   'accumulation' → fire only once claimable >= CLAIM_EVERY_ETH
+  // The scheduler ticks on POLL_SCHEDULE only to CHECK the accrued balance — a
+  // tick never fires a cycle by itself. TRIGGER_MODE decides the gate:
+  //   'accumulation' → fire only once claimable >= CLAIM_EVERY_ETH (default)
+  //   'interval'     → fire on whatever has accrued every tick
   triggerMode,
-  pollSchedule: process.env.POLL_SCHEDULE || '*/5 * * * *',
-  claimEveryEth: num(process.env.CLAIM_EVERY_ETH, 0.005),
+  pollSchedule: process.env.POLL_SCHEDULE || '* * * * *',
+  claimEveryEth: num(process.env.CLAIM_EVERY_ETH, 0.01),
   // DRY_RUN only: simulated ETH added to the fee vault each tick, so cycles have
   // something to claim without real fees.
   dryRunFeePerPoll: num(process.env.DRY_RUN_FEE_PER_POLL, 0.01),

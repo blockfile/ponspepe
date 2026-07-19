@@ -14,12 +14,10 @@ test('config exposes pons.family + reward-engine defaults', () => {
   assert.strictEqual(config.ponsLocker.toLowerCase(), '0x736d76699c26d0d966744cae304c000d471f7f35');
   assert.strictEqual(config.weth.toLowerCase(), '0x0bd7d308f8e1639fab988df18a8011f41eacad73');
   assert.strictEqual(config.swapRouter.toLowerCase(), '0xcaf681a66d020601342297493863e78c959e5cb2');
-  // Uniswap V4 — the stock buy path (these are the deployments wired to this PoolManager).
-  assert.strictEqual(config.universalRouter.toLowerCase(), '0xc6da9c87cae2fcecad79e22c398de16bfab0cfda');
-  assert.strictEqual(config.v4Quoter.toLowerCase(), '0x628c00b016415ef530552063fae4154b0cdeb0ac');
-  assert.strictEqual(config.poolManager.toLowerCase(), '0x8366a39cc670b4001a1121b8f6a443a643e40951');
-  // Blank STOCKS = buy the whole verified registry.
-  assert.deepStrictEqual(config.stocks, []);
+  // Reward token — bought with the WETH claim on Uniswap V3, then airdropped.
+  assert.strictEqual(config.rewardToken, '0x39dbed3a2bd333467115de45665cc57f813c4571');
+  assert.strictEqual(config.rewardSymbol, 'PONS');
+  assert.strictEqual(config.rewardPoolFee, 10000);
   assert.strictEqual(config.tokenSymbol, 'PONZI');
   assert.strictEqual(config.rewardBuyPct, 80);
   assert.strictEqual(config.devPct, 20); // remainder — nothing is burned
@@ -27,9 +25,9 @@ test('config exposes pons.family + reward-engine defaults', () => {
   assert.strictEqual(config.rewardCapPct, 0);
   // The CODE default — not whatever a local .env happens to set.
   assert.strictEqual(config.airdropBatchSize, 30);
-  assert.strictEqual(config.triggerMode, 'interval');
-  assert.strictEqual(config.claimEveryEth, 0.005);
-  assert.strictEqual(config.pollSchedule, '*/5 * * * *');
+  assert.strictEqual(config.triggerMode, 'accumulation');
+  assert.strictEqual(config.claimEveryEth, 0.01);
+  assert.strictEqual(config.pollSchedule, '* * * * *');
   assert.strictEqual(config.protocolFeeSharePct, 30); // pons: 70% creator / 30% protocol
   assert.strictEqual(config.deadAddress, '0x000000000000000000000000000000000000dead');
   assert.strictEqual(config.mongoDb, 'ponsliqui');

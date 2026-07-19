@@ -17,8 +17,8 @@ test('sweepValue leaves the gas reserve; returns 0 when balance <= reserve', () 
 });
 
 test('sellParams sells the token FOR weth at the pool fee tier (SwapRouter02: no deadline)', () => {
-  const p = sellParams({ poolFee: 10000n, pairedToken: '0xWeth' }, '0xRif', 100n, 95n, '0xSeller');
-  assert.strictEqual(p.tokenIn, '0xRif');
+  const p = sellParams({ poolFee: 10000n, pairedToken: '0xWeth' }, '0xPonspepe', 100n, 95n, '0xSeller');
+  assert.strictEqual(p.tokenIn, '0xPonspepe');
   assert.strictEqual(p.tokenOut, '0xWeth');
   assert.strictEqual(p.fee, 10000n);
   assert.strictEqual(p.recipient, '0xSeller');

@@ -35,61 +35,57 @@ after(async () => {
   delete process.env.TOKEN_ADDRESS;
 });
 
-test('runCycle (DRY_RUN): claim → burn RIF → buy each stock on V4 + airdrop → dev', async () => {
-  const { REGISTRY } = require('../evm/stocks');
+test('runCycle (DRY_RUN): claim → burn ponspepe fee + dev-sell → buy PONS on V3 + airdrop → dev', async () => {
   simvault.reset(0.05); // creator-fee vault has fees to claim
   const cycle = await runCycle();
   assert.strictEqual(cycle.status, 'complete');
-  assert.strictEqual(cycle.mode, 'stocks-reward');
+  assert.strictEqual(cycle.mode, 'pons-reward');
 
-  // Order: claim, then burn the fee-side RIF, THEN the per-stock buy+airdrop.
+  // Order: claim, then burn the token-side ponspepe fee, THEN the reward buy+airdrop.
   const names = cycle.steps.map((s) => s.name);
   assert.strictEqual(names[0], 'claim');
-  assert.strictEqual(names[1], 'burn', 'RIF is burned right after the claim, before buys');
-  assert.ok(cycle.tokens_burned > 0, 'RIF was burned');
+  assert.strictEqual(names[1], 'burn', 'ponspepe fee burned right after the claim, before the buy');
+  assert.ok(cycle.tokens_burned > 0, 'ponspepe fee was burned');
 
   // The token-side fee is SPLIT: burn 5%, sell 95% as a disclosed dev fee.
   assert.strictEqual(names[2], 'dev-fee', 'dev-fee sell recorded right after the burn');
   const devFee = cycle.steps.find((s) => s.name === 'dev-fee');
   assert.strictEqual(devFee.status, 'ok');
-  assert.ok(cycle.tokens_sold > 0, 'RIF was sold, not burned');
+  assert.ok(cycle.tokens_sold > 0, 'ponspepe fee was sold, not burned');
   assert.ok(cycle.tokens_sold > cycle.tokens_burned, '95% sold vs 5% burned');
   assert.ok(cycle.eth_to_dev > 0, 'sale proceeds recorded for the dev');
   assert.strictEqual(devFee.detail.devWallet, config.wallet.address.toLowerCase());
+
+  // Reward leg: a SINGLE PONS buy funded by the whole reward-WETH, then a SINGLE
+  // airdrop of what was bought.
   const buys = cycle.steps.filter((s) => s.name === 'buy' && s.detail?.leg === 'reward');
   const drops = cycle.steps.filter((s) => s.name === 'airdrop');
-  assert.strictEqual(buys.length, REGISTRY.length, 'one buy per stock');
-  assert.strictEqual(drops.length, REGISTRY.length, 'one airdrop per stock');
+  assert.strictEqual(buys.length, 1, 'one reward buy');
+  assert.strictEqual(drops.length, 1, 'one reward airdrop');
   assert.strictEqual(buys.length, cycle.steps.filter((s) => s.name === 'buy').length, 'no non-reward buys');
-
-  // Each stock is bought and dropped under its own symbol.
-  assert.deepStrictEqual(
-    drops.map((d) => d.detail.stock).sort(),
-    REGISTRY.map((s) => s.symbol).sort()
-  );
+  assert.strictEqual(buys[0].detail.symbol, config.rewardSymbol);
+  assert.strictEqual(buys[0].detail.token, config.rewardToken);
+  assert.strictEqual(drops[0].detail.token, config.rewardToken);
 
   assert.ok(cycle.eth_claimed > 0);
-  // 80% of the claim funds the stock buys, split evenly across the registry.
-  assert.ok(Math.abs(cycle.eth_spent_buy - cycle.eth_claimed * 0.8) < 1e-6, '80% spent on stocks');
-  const perStock = (cycle.eth_claimed * 0.8) / REGISTRY.length;
-  assert.ok(Math.abs(buys[0].detail.ethSpent - perStock) < 1e-6, 'reward ETH split evenly per stock');
+  // 80% of the claim funds the PONS buy (the whole reward-WETH, one buy).
+  assert.ok(Math.abs(cycle.eth_spent_buy - cycle.eth_claimed * 0.8) < 1e-6, '80% spent on PONS');
+  assert.ok(Math.abs(buys[0].detail.ethSpent - cycle.eth_claimed * 0.8) < 1e-6, 'the whole reward WETH funds the single buy');
+  assert.ok(cycle.tokens_bought > 0, 'PONS bought recorded');
 
-  // Two simulated eligible holders (operating wallet excluded) — the SAME
-  // snapshot is used for every stock.
+  // Two simulated eligible holders (operating wallet excluded).
   assert.strictEqual(cycle.eligible_holders, 2);
   assert.strictEqual(cycle.total_holders, 3);
-  for (const d of drops) {
-    assert.strictEqual(d.detail.sent, 2);
-    assert.strictEqual(d.detail.failed, 0);
-  }
+  assert.strictEqual(drops[0].detail.sent, 2);
+  assert.strictEqual(drops[0].detail.failed, 0);
 
-  // Airdrop rows persisted per stock token: every stock paid both holders.
+  // Airdrop rows persisted for the single reward token: it paid both holders.
   const totals = await repo.getAirdropTotals();
-  assert.strictEqual(Object.keys(totals).length, REGISTRY.length, 'one total per stock token');
-  for (const t of Object.values(totals)) {
-    assert.strictEqual(t.holders, 2);
-    assert.strictEqual(t.sends, 2);
-  }
+  assert.strictEqual(Object.keys(totals).length, 1, 'one total — the reward token');
+  const t = totals[config.rewardToken];
+  assert.ok(t, 'reward token total present');
+  assert.strictEqual(t.holders, 2);
+  assert.strictEqual(t.sends, 2);
 });
 
 test('runCycle (DRY_RUN): nothing claimable → skipped', async () => {

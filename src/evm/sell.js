@@ -1,14 +1,15 @@
 'use strict';
 
-// Sell the token-side creator fee (RIF) to ETH from the DISCLOSED fee-conversion
-// wallet, and forward the ETH to the dev wallet. This is the sell leg of the
-// burn/sell split — it is NEVER a "burn" and is reported as a dev fee.
+// Sell the token-side creator fee (the ponspepe token itself) to ETH from the
+// DISCLOSED fee-conversion wallet, and forward the ETH to the dev wallet. This is
+// the sell leg of the burn/sell split — it is NEVER a "burn" and is reported as a
+// dev fee.
 //
-// RIF is a pons.family launch: its liquidity is a Uniswap V3 pool (RIF/WETH)
-// whose fee tier + token ordering come from the launch record. We quote by
-// static-calling the router's exactInputSingle (amountOutMinimum=0), apply a
-// slippage floor to the real swap, unwrap WETH → native ETH, then sweep to the
-// dev wallet minus a gas reserve.
+// ponspepe is a pons.family launch: its liquidity is a Uniswap V3 pool
+// (ponspepe/WETH) whose fee tier + token ordering come from the launch record. We
+// quote by static-calling the router's exactInputSingle (amountOutMinimum=0),
+// apply a slippage floor to the real swap, unwrap WETH → native ETH, then sweep
+// to the dev wallet minus a gas reserve.
 
 const { Contract, MaxUint256, parseEther, formatEther, formatUnits } = require('ethers');
 const config = require('../config');
@@ -67,7 +68,7 @@ async function sellTokenForEth(token, amountRaw) {
   const amount = BigInt(amountRaw || '0');
 
   if (config.dryRun) {
-    // Simulate ~1 ETH per 1000 RIF so a dry cycle has plausible numbers.
+    // Simulate ~1 ETH per 1000 ponspepe so a dry cycle has plausible numbers.
     const ethReceived = Number(amount) / 1e18 / 1000;
     const ethToDev = Math.max(0, ethReceived - config.sellerGasReserveEth);
     return {
@@ -87,23 +88,23 @@ async function sellTokenForEth(token, amountRaw) {
   const router = new Contract(config.swapRouter, V3_ROUTER_ABI, sellerSigner);
   const seller = sellerSigner.address;
 
-  // Move the sell-side RIF from the operating wallet to the DISCLOSED seller
+  // Move the sell-side ponspepe from the operating wallet to the DISCLOSED seller
   // wallet FIRST, so the swap is signed by (and visible on-chain as) the seller
   // wallet — the point of the separate wallet.
   const xferTx = await sendTx(() => erc20(token, wallet).transfer(seller, amount));
   await xferTx.wait();
   console.log(`[tx] move ${formatEther(amount)} ${config.tokenSymbol} → seller ${seller}: ${xferTx.hash}`);
 
-  // Sell the seller wallet's FULL RIF balance (this transfer plus any residue
+  // Sell the seller wallet's FULL ponspepe balance (this transfer plus any residue
   // stranded by an earlier cycle whose sell failed) — self-healing.
   const sellAmount = await readTokenBalance(token, seller);
-  if (sellAmount <= 0n) throw new Error('seller wallet holds no RIF after transfer');
+  if (sellAmount <= 0n) throw new Error('seller wallet holds no ponspepe after transfer');
 
   // Approve the router once (idempotent — skip if the allowance already covers).
-  const rif = erc20(token, sellerSigner);
-  const allowance = await rif.allowance(seller, config.swapRouter);
+  const feeToken = erc20(token, sellerSigner);
+  const allowance = await feeToken.allowance(seller, config.swapRouter);
   if (allowance < sellAmount) {
-    const approveTx = await sendTx(() => rif.approve(config.swapRouter, MaxUint256));
+    const approveTx = await sendTx(() => feeToken.approve(config.swapRouter, MaxUint256));
     await approveTx.wait();
     console.log(`[tx] approve ${config.tokenSymbol} → V3 router: ${approveTx.hash}`);
   }
@@ -115,7 +116,7 @@ async function sellTokenForEth(token, amountRaw) {
   if (quoted === 0n) throw new Error(`sell quote returned 0 (no liquidity for ${token}?)`);
   const minOut = computeMinOut(quoted, config.sellSlippagePct);
 
-  // Swap RIF → WETH; measure WETH actually received from the balance delta.
+  // Swap ponspepe → WETH; measure WETH actually received from the balance delta.
   const weth = wethContract(sellerSigner);
   const wethBefore = await weth.balanceOf(seller);
   const swapTx = await sendTx(() =>
@@ -145,7 +146,7 @@ async function sellTokenForEth(token, amountRaw) {
   return {
     signature: swapTx.hash,
     soldRaw: sellAmount,
-    sold: Number(formatEther(sellAmount)), // RIF is 18-decimal
+    sold: Number(formatEther(sellAmount)), // ponspepe is 18-decimal
     ethReceived: Number(formatEther(wethOut)),
     ethToDev,
     simulated: false,

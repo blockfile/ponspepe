@@ -2,7 +2,7 @@
   "name": "ponsliqui",
   "version": "0.1.0",
   "private": true,
-  "description": "pons.family reward bot on Robinhood Chain: recycles PONZI creator fees into buying tokenized stocks on Uniswap V4 and airdropping them to PONZI holders, plus a dev cut (DRY_RUN first).",
+  "description": "pons.family reward bot on Robinhood Chain: recycles ponspepe creator fees into buying PONS on Uniswap V3 and airdropping it to ponspepe holders, plus a dev cut (DRY_RUN first).",
   "type": "commonjs",
   "main": "server.js",
   "scripts": {

@@ -40,15 +40,12 @@ test('DRY_RUN snapshot returns simulated eligible holders, excluding the operati
   assert.ok(!holders.some((h) => h.owner.toLowerCase() === wallet.address.toLowerCase()));
 });
 
-test('buildExcludeSet includes wallet, dead, locker, the V4 contracts and the stock tokens', async () => {
-  const { REGISTRY } = require('./stocks');
+test('buildExcludeSet includes wallet, dead, locker, factory and the reward token', async () => {
   const set = await buildExcludeSet(null);
   assert.ok(set.has(wallet.address.toLowerCase()));
   assert.ok(set.has(config.deadAddress.toLowerCase()));
   assert.ok(set.has(config.ponsLocker.toLowerCase()));
-  // The V4 singleton holds pool reserves — it must never be paid an airdrop.
-  assert.ok(set.has(config.poolManager.toLowerCase()));
-  assert.ok(set.has(config.universalRouter.toLowerCase()));
-  // The stock tokens are the payout asset, not holders.
-  for (const s of REGISTRY) assert.ok(set.has(s.token), `${s.symbol} excluded`);
+  assert.ok(set.has(config.ponsFactory.toLowerCase()));
+  // The reward token contract is the payout asset, not a holder.
+  assert.ok(set.has(config.rewardToken.toLowerCase()));
 });

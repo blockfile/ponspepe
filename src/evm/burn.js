@@ -2,8 +2,8 @@
 
 // Burn an ERC-20 by sending it to the dead address — permanently out of
 // circulation (the dead address has no private key). Used each cycle to burn the
-// RIF the wallet holds: pons pays the creator fee partly in the token itself, so
-// that token-side RIF is burned rather than left idle.
+// ponspepe the wallet holds: pons pays the creator fee partly in the token
+// itself, so that token-side fee is burned rather than left idle.
 
 const { formatUnits } = require('ethers');
 const config = require('../config');

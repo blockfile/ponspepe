@@ -61,7 +61,7 @@ async function airdropToken({ rewardToken, allocations, cycleId }) {
 }
 
 // The Disperse contract moves the tokens with transferFrom, so it must be
-// approved to spend this stock. Approve max once per token — after that the
+// approved to spend this reward token. Approve max once per token — after that the
 // allowance is huge and this is a no-op. Best-effort: on failure the caller's
 // try/catch records the batch failed rather than crashing the cycle.
 async function ensureDisperseApproval(token, needed) {
