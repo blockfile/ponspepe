@@ -72,7 +72,7 @@ router.get('/status', async (req, res, next) => {
         pollSchedule: config.pollSchedule,
         claimEveryEth: config.claimEveryEth,
         rewardBuyPct: config.rewardBuyPct,
-        burnPct: config.burnPct,
+        burnPct: 100, // the token-side fee is always burned in full
         devPct: config.devPct,
         minHold: config.minHold,
         deadAddress: config.deadAddress,

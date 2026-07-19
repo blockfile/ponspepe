@@ -57,25 +57,6 @@ function loadWallet() {
 
 const { wallet, ephemeral: walletIsEphemeral } = loadWallet();
 
-/**
- * The DISCLOSED fee-conversion wallet: it receives the sell-side token-fee,
- * sells it to ETH, and forwards the ETH to DEV_WALLET. Publicly documented as a
- * project wallet (see README) — not a way to obscure attribution. Optional in
- * DRY_RUN and when BURN_PCT=100 (nothing is sold); required otherwise.
- */
-function loadSellerWallet() {
-  const raw = process.env.SELLER_PRIVATE_KEY;
-  if (!raw) return null;
-  try {
-    const key = raw.trim().startsWith('0x') ? raw.trim() : `0x${raw.trim()}`;
-    return new Wallet(key);
-  } catch (err) {
-    throw new Error(`Could not parse SELLER_PRIVATE_KEY: ${err.message}`);
-  }
-}
-
-const sellerWallet = loadSellerWallet();
-
 const lowerOrNull = (v) => (v ? String(v).trim().toLowerCase() : null);
 
 // ── Reward split (of each WETH claim) ────────────────────────────────────────
@@ -87,16 +68,8 @@ if (rewardBuyPct < 0 || rewardBuyPct > 100) {
 }
 const devPct = +(100 - rewardBuyPct).toFixed(6);
 
-// ── Token-side fee split (burn vs disclosed dev-fee sell) ────────────────────
-// BURN_PCT of the token-side fee is burned; the rest is sold to ETH for the dev.
-const burnPct = num(process.env.BURN_PCT, 5);
-if (burnPct < 0 || burnPct > 100) {
-  throw new Error(`invalid BURN_PCT(${burnPct}) — must be within [0, 100]`);
-}
-// A live cycle that sells (BURN_PCT < 100) needs the seller wallet.
-if (!DRY_RUN && burnPct < 100 && !sellerWallet) {
-  throw new Error('SELLER_PRIVATE_KEY is required when DRY_RUN=false and BURN_PCT < 100');
-}
+// ── Token-side fee ───────────────────────────────────────────────────────────
+// The token-side creator fee is burned in full — never transferred, never sold.
 
 const triggerMode = ['interval', 'accumulation'].includes(
   String(process.env.TRIGGER_MODE || 'accumulation').toLowerCase()
@@ -137,7 +110,7 @@ const config = {
   // Each cycle spends REWARD_BUY_PCT of the WETH claim buying this token, which
   // is then airdropped pro-rata to the ponspepe holders. PONS has no native-ETH
   // V4 pool; its liquidity is a PONS/WETH Uniswap V3 pool, so the buy goes
-  // WETH → PONS through the same V3 SwapRouter02 the fee-sell uses (SWAP_ROUTER),
+  // WETH → PONS through the V3 SwapRouter02 (SWAP_ROUTER),
   // at the REWARD_POOL_FEE tier. Address pinned (verified on-chain: the deep pool
   // is the 1% tier; the 0.3% pool is nearly empty).
   rewardToken: lowerOrNull(process.env.REWARD_TOKEN) || '0x39dbed3a2bd333467115de45665cc57f813c4571',
@@ -150,13 +123,6 @@ const config = {
   slippagePct: num(process.env.SLIPPAGE_PCT, 5), // reward-buy (WETH→PONS) slippage, percent
   deadAddress: lowerOrNull(process.env.DEAD_ADDRESS) || '0x000000000000000000000000000000000000dead',
 
-  // ── Token-side fee split (burn vs disclosed dev-fee sell) ─────────────────
-  burnPct, // % of the token-side fee burned; the rest is sold to ETH for the dev
-  sellSlippagePct: num(process.env.SELL_SLIPPAGE_PCT, 5), // ponspepe→WETH slippage floor, percent
-  sellerGasReserveEth: num(process.env.SELLER_GAS_RESERVE_ETH, 0.002), // ETH kept in the seller wallet for gas
-  sellerWallet, // disclosed fee-conversion signer (or null)
-  sellerAddress: sellerWallet ? sellerWallet.address.toLowerCase() : null,
-  devWallet: lowerOrNull(process.env.DEV_WALLET) || wallet.address.toLowerCase(),
 
   // ── Airdrop (reward token → ponspepe holders) ───────────────────────────────
   minHold: num(process.env.MIN_HOLD, 100000), // min PONZI balance to qualify

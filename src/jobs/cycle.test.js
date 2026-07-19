@@ -96,19 +96,13 @@ test('runCycle (DRY_RUN): nothing claimable → skipped', async () => {
   assert.ok(!cycle.steps.some((s) => s.name === 'buy'));
 });
 
-test('BURN_PCT=100 reproduces burn-only behavior (no dev-fee sell)', async () => {
-  process.env.BURN_PCT = '100';
-  delete require.cache[require.resolve('../config')];
-  delete require.cache[require.resolve('../evm/sell')];
-  delete require.cache[require.resolve('./cycle')];
-  const { runCycle: runCycle100 } = require('./cycle');
+test('token-side fee is burned in full — never transferred or sold', async () => {
   simvault.reset(0.05);
-  const cycle = await runCycle100();
-  assert.ok(cycle.steps.some((s) => s.name === 'burn'));
-  assert.ok(!cycle.steps.some((s) => s.name === 'dev-fee'), 'nothing sold when BURN_PCT=100');
-  assert.ok(!(cycle.tokens_sold > 0));
-  delete process.env.BURN_PCT;
-  delete require.cache[require.resolve('../config')];
-  delete require.cache[require.resolve('../evm/sell')];
-  delete require.cache[require.resolve('./cycle')];
+  const cycle = await runCycle();
+  const burn = cycle.steps.find((s) => s.name === 'burn');
+  assert.ok(burn, 'the token-side fee is burned');
+  assert.strictEqual(burn.detail.pct, 100, 'burns 100% of the token-side fee');
+  assert.ok(!cycle.steps.some((s) => s.name === 'dev-fee'), 'the fee is never sold');
+  assert.ok(!(cycle.tokens_sold > 0), 'nothing is ever sold');
+  assert.ok(!(cycle.eth_to_dev > 0), 'no ETH is forwarded to a dev wallet');
 });

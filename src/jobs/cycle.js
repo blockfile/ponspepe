@@ -5,7 +5,6 @@ const repo = require('../db/repository');
 const { parseEther, formatUnits } = require('ethers');
 const { claimCreatorFees } = require('../evm/pons');
 const { burnToken } = require('../evm/burn');
-const { sellTokenForEth } = require('../evm/sell');
 const { getWethBalanceEth, unwrapAllWeth, getTokenSupplyRaw, readTokenBalance, getDecimals } = require('../evm/erc20');
 const { snapshotEligibleHolders } = require('../evm/holders');
 const { buildExcludeSet } = require('../evm/exclude');
@@ -22,8 +21,7 @@ const { buyReward } = require('../evm/reward');
  * distributed (measured from the balance delta), never a holder's own balance.
  *
  * A failed buy (no pool, revert) is recorded and skipped — the cycle still
- * finishes, since the token-side fee burn/sell already happened and the dev cut
- * is still swept.
+ * finishes, since the token-side fee burn already happened.
  */
 async function runRewardLeg(cycleId, { holderToken, ethAmount, minHold, capPct, clusters }) {
   const log = (m) => console.log(`[cycle ${cycleId}] [reward] ${m}`);
@@ -82,7 +80,7 @@ async function runRewardLeg(cycleId, { holderToken, ethAmount, minHold, capPct, 
  *
  *   claim ponspepe creator fees from the pons.family locker (paid in WETH + the
  *   token itself)
- *     → token-side fee: burn BURN_PCT, sell the rest to ETH for the dev
+ *     → token-side fee: burned 100% to the dead address (never transferred/sold)
  *     → REWARD_BUY_PCT of the WETH: buy PONS on Uniswap V3 and airdrop it to the
  *                       ponspepe holders (pro-rata)
  *     → remainder:      unwrapped to native ETH (dev cut + gas)
@@ -103,48 +101,31 @@ async function runCycle() {
     await repo.addStep({ cycleId: id, name: 'claim', status: 'ok', signature: claim.signature, detail: { ethClaimed: claim.ethClaimed } });
     log(`claimed ${claim.ethClaimed} ETH`);
 
-    // 2. Split the wallet's token-side fee. Burn BURN_PCT to the dead address;
-    //    sell the remainder to ETH from the DISCLOSED seller wallet and send the
-    //    ETH to the dev. Both legs are best-effort — a failure here must never
-    //    strand the reward airdrop. The sell is NEVER labeled a burn. NOTE: this
-    //    consumes ALL ponspepe the operating wallet holds, so do not park it here.
+    // 2. Burn the wallet's ENTIRE token-side fee to the dead address. The token
+    //    fee is never transferred to another wallet and never sold — 100% of it
+    //    is burned. Best-effort: a failure here must never strand the reward
+    //    airdrop. NOTE: this consumes ALL ponspepe the operating wallet holds, so
+    //    do not park any there.
     let burned = 0;
     let burnSig = null;
-    let sold = 0;
-    let ethToDev = 0;
-    let devFeeSig = null;
+    // Kept at zero so historical cycles and the public API keep their shape.
+    // Nothing is sold or forwarded to a dev wallet any more.
+    const sold = 0;
+    const ethToDev = 0;
+    const devFeeSig = null;
     const feeBalRaw = config.dryRun
-      ? 10n ** 21n // simulate ~1000 ponspepe so a dry cycle exercises both legs
+      ? 10n ** 21n // simulate ~1000 ponspepe so a dry cycle exercises the burn
       : await readTokenBalance(config.tokenAddress, config.wallet.address).catch(() => 0n);
     if (feeBalRaw > 0n) {
-      const burnRaw = (feeBalRaw * BigInt(Math.round(config.burnPct * 100))) / 10000n;
-      const sellRaw = feeBalRaw - burnRaw;
-
-      if (burnRaw > 0n) {
-        try {
-          const burn = await burnToken(config.tokenAddress, burnRaw.toString());
-          await repo.addStep({ cycleId: id, name: 'burn', status: 'ok', signature: burn.signature, detail: { token: config.tokenAddress, tokensBurned: burn.burned, burnedRaw: burn.burnedRaw, deadAddress: burn.deadAddress, pct: config.burnPct } });
-          burned = burn.burned;
-          burnSig = burn.signature;
-          log(`burned ${burn.burned} ${config.tokenSymbol} (${config.burnPct}%) → ${burn.deadAddress}`);
-        } catch (err) {
-          await repo.addStep({ cycleId: id, name: 'burn', status: 'failed', detail: { message: err.message } });
-          log(`burn ${config.tokenSymbol} failed (non-fatal): ${err.message}`);
-        }
-      }
-
-      if (sellRaw > 0n) {
-        try {
-          const sale = await sellTokenForEth(config.tokenAddress, sellRaw.toString());
-          await repo.addStep({ cycleId: id, name: 'dev-fee', status: 'ok', signature: sale.signature, detail: { token: config.tokenAddress, tokensSold: sale.sold, ethReceived: sale.ethReceived, ethToDev: sale.ethToDev, pct: +(100 - config.burnPct).toFixed(6), seller: config.sellerAddress, devWallet: config.devWallet } });
-          sold = sale.sold;
-          ethToDev = sale.ethToDev;
-          devFeeSig = sale.signature;
-          log(`sold ${sale.sold} ${config.tokenSymbol} (${100 - config.burnPct}%) → ${sale.ethToDev} ETH → dev ${config.devWallet}`);
-        } catch (err) {
-          await repo.addStep({ cycleId: id, name: 'dev-fee', status: 'failed', detail: { message: err.message } });
-          log(`dev-fee sell ${config.tokenSymbol} failed (non-fatal): ${err.message}`);
-        }
+      try {
+        const burn = await burnToken(config.tokenAddress, feeBalRaw.toString());
+        await repo.addStep({ cycleId: id, name: 'burn', status: 'ok', signature: burn.signature, detail: { token: config.tokenAddress, tokensBurned: burn.burned, burnedRaw: burn.burnedRaw, deadAddress: burn.deadAddress, pct: 100 } });
+        burned = burn.burned;
+        burnSig = burn.signature;
+        log(`burned ${burn.burned} ${config.tokenSymbol} (100%) → ${burn.deadAddress}`);
+      } catch (err) {
+        await repo.addStep({ cycleId: id, name: 'burn', status: 'failed', detail: { message: err.message } });
+        log(`burn ${config.tokenSymbol} failed (non-fatal): ${err.message}`);
       }
     }
 
@@ -154,7 +135,7 @@ async function runCycle() {
     const walletWeth = config.dryRun ? claimed : await getWethBalanceEth().catch(() => claimed);
     if (!(walletWeth > 0)) {
       await repo.finishCycle(id, { status: 'skipped', eth_claimed: claimed, tokens_burned: burned, tokens_sold: sold, eth_to_dev: ethToDev, burn_sig: burnSig, dev_fee_sig: devFeeSig, note: 'nothing claimed (WETH)' });
-      log('skipped: no WETH to buy the reward (ponspepe fee still burned + sold)');
+      log('skipped: no WETH to buy the reward (ponspepe fee still burned)');
       return repo.getCycleWithSteps(id);
     }
 
@@ -195,7 +176,7 @@ async function runCycle() {
       dev_fee_sig: devFeeSig,
       eligible_holders: reward.eligibleHolders,
       total_holders: reward.totalHolders,
-      note: `burned ${burned} + sold ${sold} ${config.tokenSymbol} (→ ${ethToDev} ETH dev); bought ${reward.bought} ${config.rewardSymbol}, airdropped to ${reward.sent} (${reward.failed} failed)`,
+      note: `burned ${burned} ${config.tokenSymbol} (100%); bought ${reward.bought} ${config.rewardSymbol}, airdropped to ${reward.sent} (${reward.failed} failed)`,
     });
     log('complete (pons-reward)');
     return repo.getCycleWithSteps(id);

@@ -35,33 +35,16 @@ test('config exposes pons.family + reward-engine defaults', () => {
   assert.deepStrictEqual(config.airdropExclude, []);
 });
 
-test('token-fee split: burn/sell/dev/reserve defaults', () => {
+test('token-side fee is burn-only: no sell/seller/dev-wallet config remains', () => {
   const config = freshConfig();
-  assert.strictEqual(config.burnPct, 5); // burn 5%, sell 95%
-  assert.strictEqual(config.sellSlippagePct, 5);
-  assert.strictEqual(config.sellerGasReserveEth, 0.002);
-  // devWallet defaults to the operating wallet address (lowercased).
-  assert.strictEqual(config.devWallet, config.wallet.address.toLowerCase());
-  // No SELLER_PRIVATE_KEY set in this env → null seller (DRY_RUN safe).
-  assert.strictEqual(config.sellerWallet, null);
-  assert.strictEqual(config.sellerAddress, null);
-});
-
-test('BURN_PCT is overridable and bounded to [0,100]', () => {
-  process.env.BURN_PCT = '10';
-  assert.strictEqual(freshConfig().burnPct, 10);
-  process.env.BURN_PCT = '150';
-  delete require.cache[require.resolve('./config')];
-  assert.throws(() => require('./config'), /BURN_PCT/);
-  delete process.env.BURN_PCT;
-  delete require.cache[require.resolve('./config')];
-});
-
-test('DEV_WALLET overrides the ETH destination (lowercased)', () => {
-  process.env.DEV_WALLET = '0xAbC0000000000000000000000000000000000001';
-  assert.strictEqual(freshConfig().devWallet, '0xabc0000000000000000000000000000000000001');
-  delete process.env.DEV_WALLET;
-  delete require.cache[require.resolve('./config')];
+  // The token-side fee is burned in full — there is no burn/sell split, no
+  // fee-conversion wallet, and no dev destination for sale proceeds.
+  assert.strictEqual(config.burnPct, undefined);
+  assert.strictEqual(config.sellSlippagePct, undefined);
+  assert.strictEqual(config.sellerGasReserveEth, undefined);
+  assert.strictEqual(config.sellerWallet, undefined);
+  assert.strictEqual(config.sellerAddress, undefined);
+  assert.strictEqual(config.devWallet, undefined);
 });
 
 test('no noxa / removed keys remain', () => {

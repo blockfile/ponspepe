@@ -9,18 +9,16 @@ Every claim, the bot recycles your ponspepe creator fees into a PONS airdrop:
 claim ponspepe creator fees (WETH + the token itself)  — collectFees() on the pons.family locker
 
   ── token-side fee (paid in ponspepe) ──
-  →  5%  burned (sent to the dead address)
-  → 95%  sold to ETH by the DISCLOSED fee-conversion wallet → sent to the dev
+  → 100% burned (sent to the dead address) — never transferred, never sold
 
   ── WETH ──
   → 80%  buy PONS (Uniswap V3) → airdrop to every ponspepe holder (pro-rata, >= MIN_HOLD)
   → 20%  unwrapped to native ETH (dev cut + gas)
 ```
 
-Every eligible holder receives PONS every cycle. The token-side fee is split
-(`BURN_PCT`): the default **5% is burned, 95% is sold to ETH for the dev** — see
-[Token-side fee](#token-side-fee-burn--disclosed-dev-fee) below. The sold portion
-is a **disclosed dev fee**, never counted as a burn.
+Every eligible holder receives PONS every cycle. The token-side fee is **burned in
+full** — see [Token-side fee](#token-side-fee-burned-in-full) below. It is never
+transferred to another wallet and never sold.
 
 Everything runs in `DRY_RUN=true` by default — all on-chain calls are simulated
 and no funds are touched until you flip it off.
@@ -38,8 +36,8 @@ interesting part — and the venue is not the obvious one, all verified on-chain
 | Uniswap **V4** | no native-ETH PONS pool (unlike the Robinhood stock tokens) |
 | Uniswap **V3** | ✅ a real PONS/WETH pool — the deep one is the **1% (`fee=10000`)** tier |
 
-So the bot buys PONS on **V3**, swapping **WETH → PONS** through the same
-SwapRouter02 the fee-sell uses (`SWAP_ROUTER`), at `REWARD_POOL_FEE`. The claim is
+So the bot buys PONS on **V3**, swapping **WETH → PONS** through
+SwapRouter02 (`SWAP_ROUTER`), at `REWARD_POOL_FEE`. The claim is
 kept as WETH for this (no unwrap); only the dev remainder is unwrapped to ETH.
 
 > The address is pinned, never the symbol — the chain has copycats squatting
@@ -55,32 +53,19 @@ protocol share, and pays the creator remainder to the token's fee recipient — 
 **deployer**. So the operating wallet **must be the wallet that deployed ponspepe
 on pons.family**; the WETH lands there and the cycle spends it on the PONS buy.
 
-## Token-side fee: burn + disclosed dev fee
+## Token-side fee: burned in full
 
 pons.family pays the creator fee partly in **WETH** and partly in the **token
-itself** (ponspepe). Each cycle, that token-side ponspepe is split (`BURN_PCT`,
-default 5):
+itself** (ponspepe). Each cycle, **100% of that token-side ponspepe is burned** —
+sent to the dead address (`DEAD_ADDRESS`), permanently out of supply.
 
-- **`BURN_PCT`% is burned** — sent to the dead address, permanently out of supply.
-- **The remainder is sold to ETH** on the ponspepe/WETH Uniswap **V3** launch pool
-  by the project's **disclosed fee-conversion wallet** (`SELLER_PRIVATE_KEY`),
-  which then forwards the ETH to the dev wallet (`DEV_WALLET`), keeping a small gas
-  reserve.
+It is **never transferred to another wallet and never sold.** There is no
+burn/sell split, no fee-conversion wallet, and no dev cut taken from the token
+side. The only ETH the dev receives is the WETH remainder
+(`100 - REWARD_BUY_PCT`), which also covers gas.
 
-This is a **disclosed dev fee, not a burn.** Selling the token is not the same as
-burning it, and this is reported that way everywhere:
-
-- `/v1/stats` returns `ponspepeBurned`, `ponspepeSold`, and `ethToDev`
-  **separately** — the sold portion is never merged into the burn figure.
-- The fee-conversion wallet address is **published here**:
-  `<PUBLISH THE SELLER ADDRESS HERE>`.
-
-The WETH leg (the PONS buy + airdrop) is funded **only** by the claimed WETH — the
-ETH from selling the fee goes to the dev, not into the reward budget.
-
-Before enabling this live, run `node scripts/verify-sell-route.js` (see
-[scripts/](scripts/)) against the real chain to confirm the router/pool, and
-pre-fund the seller wallet with a little native ETH for gas.
+`/v1/stats` still returns `ponspepeSold` and `ethToDev` alongside
+`ponspepeBurned` for backwards compatibility, but they are now always `0`.
 
 ## The reward leg, precisely
 
@@ -92,7 +77,7 @@ pre-fund the seller wallet with a little native ETH for gas.
 - Eligibility: `>= MIN_HOLD` ponspepe. The operating wallet, dead address, the
   ponspepe pool, locker, factory, and the PONS token itself are all excluded.
 - If the buy fails (no liquidity, revert) it's recorded and the airdrop is skipped
-  — the cycle still finishes, and the token-side burn/sell already happened.
+  — the cycle still finishes, and the token-side burn already happened.
 
 ## Trigger
 
@@ -133,8 +118,7 @@ npm start
 
 ## Verified, not assumed
 
-- The full dry-run cycle is covered by tests (claim → burn/sell the token-side fee
-  → buy PONS on V3 → airdrop → dev).
+- The full dry-run cycle is covered by tests (claim → burn the token-side fee
+  → buy PONS on V3 → airdrop).
 - The PONS/WETH V3 pool and fee tier were confirmed against the live chain (deep
-  pool = the 1% / `fee=10000` tier). Run `node scripts/verify-sell-route.js`
-  before going live to re-confirm the route on-chain.
+  pool = the 1% / `fee=10000` tier).
