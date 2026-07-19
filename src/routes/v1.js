@@ -5,7 +5,7 @@
 // on demand behind the cache, so these endpoints are cheap to poll.
 
 const express = require('express');
-const { buildStats, buildStocks, buildDistributions } = require('../services/v1');
+const { buildStats, buildStocks, buildAccrual, buildDistributions } = require('../services/v1');
 
 const router = express.Router();
 
@@ -33,12 +33,29 @@ function cached(ttlMs, fn) {
 
 const loadStats = cached(15_000, buildStats);
 const loadStocks = cached(30_000, buildStocks);
+// The progress bar has to move, so accrual gets its own short TTL instead of
+// riding the 15s stats cache. Backed by one shared RPC read, so polling this
+// often costs the same no matter how many visitors are watching.
+const loadAccrual = cached(5_000, buildAccrual);
 // Per-wallet drops, so keep a deeper window than the old per-cycle receipts.
 const loadDistributions = cached(10_000, () => buildDistributions(50));
 
+// Accrual is merged in so the site's progress bar can read it straight off
+// /v1/stats, while the heavy market-data + DB aggregates stay on the long cache.
 router.get('/stats', async (req, res, next) => {
   try {
-    res.json(await loadStats());
+    const [stats, accrual] = await Promise.all([loadStats(), loadAccrual()]);
+    res.json({ ...stats, ...accrual });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Lightweight sibling for fast polling: just the progress-bar fields, no
+// market-data or DB work.
+router.get('/accrual', async (req, res, next) => {
+  try {
+    res.json(await loadAccrual());
   } catch (err) {
     next(err);
   }

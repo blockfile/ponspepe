@@ -9,6 +9,7 @@
 const config = require('../config');
 const repo = require('../db/repository');
 const { getMarketData, getTokenMarketData } = require('./marketdata');
+const { getUnclaimedEth } = require('./metrics');
 const { nextRun } = require('./countdown');
 const { sumAirdrops } = require('./format');
 
@@ -93,6 +94,29 @@ async function buildStats() {
 }
 
 /**
+ * The "next drop" progress bar: creator fees pending right now vs the threshold
+ * that fires a cycle. Split out from buildStats so it can be cached on a much
+ * shorter TTL — the bar has to move, while market cap and DB aggregates don't.
+ * The underlying RPC read is shared and cached in services/metrics.
+ */
+async function buildAccrual() {
+  const { eth } = await getUnclaimedEth().catch(() => ({ eth: null }));
+  // In 'interval' mode any claimable amount fires a cycle, so there is no target
+  // to fill toward: report 0 and let the site hide the bar.
+  const target = config.triggerMode === 'accumulation' ? config.claimEveryEth : 0;
+  const accrued = eth == null ? null : +eth.toFixed(9);
+  const pct =
+    accrued != null && target > 0 ? Math.min(100, +((accrued / target) * 100).toFixed(2)) : null;
+
+  return {
+    feesAccruedEth: accrued, // ETH pending now; falls back to ~0 after a claim
+    feesTargetEth: target, // ETH threshold that triggers a cycle
+    feesProgressPct: pct, // 0-100, clamped — the bar fill
+    triggerMode: config.triggerMode,
+  };
+}
+
+/**
  * One `airdrops` row → the PER-WALLET drop the site's live feed renders.
  * `id` keeps a numeric tail so the frontend can poll for "newer than <id>".
  */
@@ -115,4 +139,4 @@ async function buildDistributions(limit = 50) {
   return (items || []).filter((a) => a.status === 'ok').map(airdropToDrop);
 }
 
-module.exports = { buildStocks, buildStats, buildDistributions, airdropToDrop, SYMBOL_BY_ADDR };
+module.exports = { buildStocks, buildStats, buildAccrual, buildDistributions, airdropToDrop, SYMBOL_BY_ADDR };

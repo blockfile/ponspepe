@@ -10,10 +10,14 @@ marketdata.getMarketData = async () => ({ marketCap: null, priceUsd: null });
 // is required below, and the stub reads the variable at call time.
 let PONS_PRICE_USD = null;
 marketdata.getTokenMarketData = async () => ({ tokenInLp: null, marketCap: null, priceUsd: PONS_PRICE_USD });
+// Same trick for the on-chain accrual read, so buildAccrual never touches RPC.
+const metrics = require('./metrics');
+let UNCLAIMED_ETH = null;
+metrics.getUnclaimedEth = async () => ({ eth: UNCLAIMED_ETH, at: 0, fresh: false });
 const repo = require('../db/repository');
 const config = require('../config');
 
-const { buildStats, buildStocks, buildDistributions, airdropToDrop, SYMBOL_BY_ADDR } = require('./v1');
+const { buildStats, buildStocks, buildAccrual, buildDistributions, airdropToDrop, SYMBOL_BY_ADDR } = require('./v1');
 
 const AIRDROP = {
   id: 7,
@@ -54,6 +58,30 @@ test('buildDistributions returns per-wallet drops, newest first, successful only
   assert.deepStrictEqual(rows.map((r) => r.id), ['drop-9', 'drop-7'], 'newest first');
   assert.strictEqual(rows[0].wallet, '0xbbb');
   assert.strictEqual(rows[0].pons, 3);
+});
+
+test('buildAccrual reports pending fees against the claim threshold', async () => {
+  UNCLAIMED_ETH = 0.005;
+  const a = await buildAccrual();
+  assert.strictEqual(a.feesAccruedEth, 0.005);
+  assert.strictEqual(a.feesTargetEth, config.claimEveryEth);
+  assert.strictEqual(a.feesProgressPct, +((0.005 / config.claimEveryEth) * 100).toFixed(2));
+  assert.strictEqual(a.triggerMode, config.triggerMode);
+});
+
+test('buildAccrual clamps the bar at 100% when past the threshold', async () => {
+  UNCLAIMED_ETH = config.claimEveryEth * 3;
+  const a = await buildAccrual();
+  assert.strictEqual(a.feesProgressPct, 100, 'never overfills the bar');
+});
+
+test('buildAccrual reports null (not 0) when the chain read is unavailable', async () => {
+  UNCLAIMED_ETH = null;
+  const a = await buildAccrual();
+  // null keeps "cannot read the chain" distinct from "genuinely zero pending".
+  assert.strictEqual(a.feesAccruedEth, null);
+  assert.strictEqual(a.feesProgressPct, null);
+  assert.strictEqual(a.feesTargetEth, config.claimEveryEth);
 });
 
 test('SYMBOL_BY_ADDR maps the reward token address to its symbol', () => {

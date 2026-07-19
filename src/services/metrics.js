@@ -5,7 +5,10 @@
 const { getClaimableEth } = require('../evm/pons');
 
 let cache = { value: null, at: 0 };
-const TTL_MS = 20_000;
+// 5s: the site's "next drop" progress bar polls this, so the number has to move
+// often enough to look live. The cache is process-wide, so the RPC cost is fixed
+// (~12 reads/min) no matter how many visitors are polling.
+const TTL_MS = 5_000;
 
 async function getUnclaimedEth() {
   const now = Date.now();
